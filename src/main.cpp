@@ -25,10 +25,9 @@ int main() {
   vector<double> map_waypoints_dy;
 
   // Waypoint map to read from
-  string map_file_ = "../data/highway_map.csv";
+  string map_file_ = "./data/highway_map.csv";
   // The max s value before wrapping around the track back to 0
   double max_s = 6945.554;
-
   std::ifstream in_map_(map_file_.c_str(), std::ifstream::in);
 
   string line;
@@ -52,7 +51,6 @@ int main() {
   }
   int lane = 1;
   double ref_vel = 0.0;
-
   h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,
                &map_waypoints_dx,&map_waypoints_dy,&lane,&ref_vel]
               (uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
@@ -96,35 +94,70 @@ int main() {
           {
             car_s = end_path_s;
           }
-          bool too_close = false;
+          
+          bool intent_lane_change = false;
+          bool is_left_lane_safe = true;
+          bool is_right_lane_safe = true;
           
           for (int i = 0; i < sensor_fusion.size(); ++i)
           {
+            double vx = sensor_fusion[i][3];
+            double vy = sensor_fusion[i][4];
+            double check_speed = sqrt(vx*vx+vy*vy);
+            double check_s = sensor_fusion[i][5];
+            check_s += (double)prev_size*0.02*check_speed; // projection in the future path
             double d = sensor_fusion[i][6];
-            // if car is in same lane
-            if (d > (2+4*lane-2) && d < (2+4*lane+2)) 
+            
+            bool cur_left_lane_status = true;
+            bool cur_right_lane_status = true;
+            
+            double dist_between = check_s - car_s;
+            bool is_on_same_side = d < 12 && d > 0;
+            bool is_car_very_close = fabs(dist_between) < 15;
+            bool is_car_in_left = lane > 0 && d < (2+4*(lane-1)+2) && d > (2+4*(lane-1)-2);
+            bool is_car_in_right = lane < 2 && d < (2+4*(lane+1)+2) && d > (2+4*(lane+1)-2);
+            
+            if (is_on_same_side)
             {
-              double vx = sensor_fusion[i][3];
-              double vy = sensor_fusion[i][4];
-              double check_speed = sqrt(vx*vx+vy*vy);
-              double check_s = sensor_fusion[i][5];
-              check_s += (double)prev_size*0.02*check_speed; // projection in the future path
-              
-              if ((check_s > car_s) && ((check_s-car_s) < 30)) // 30 m is safe distance 
-              {
-                too_close = true;
-              }
+              if (is_car_in_left && is_car_very_close) cur_left_lane_status = false;
+              if (is_car_in_right && is_car_very_close) cur_right_lane_status = false;
             }
-          }
-          if (too_close)
-          {
-            ref_vel -= 0.224;
-          }
-          else if (ref_vel < 49.5)
-          {
-            ref_vel += 0.224;
+            
+            bool is_on_same_lane = (d > (2+4*lane-2)) && (d < (2+4*lane+2));
+            bool is_car_ahead_and_close = (check_s > car_s) && (dist_between < 30);
+            
+            if (is_on_same_lane && is_car_ahead_and_close) intent_lane_change = true;
+            
+            is_left_lane_safe = is_left_lane_safe && cur_left_lane_status;
+            is_right_lane_safe = is_right_lane_safe && cur_right_lane_status;
           }
           
+          if (intent_lane_change)
+          {
+            int next_lane = lane;
+            std::cout << lane << std::endl;
+            if (lane == 1) // middle lane
+            {
+              if (is_left_lane_safe) next_lane -= 1;
+              else if (is_right_lane_safe) next_lane += 1;
+              else ref_vel -= 0.224; // lower the speed
+            }
+            else if (lane == 0) // leftmost lane
+            {
+              if (is_right_lane_safe) next_lane += 1;
+              else ref_vel -= 0.224; // lower the speed
+            }
+            else if (lane == 2) // rightmost lane
+            {
+              if (is_left_lane_safe) next_lane -= 1;
+              else ref_vel -= 0.224; // lower the speed
+            }
+            lane = next_lane;
+          }
+          else if (ref_vel <= 49.5)
+          { 
+            ref_vel += 0.224; // speed up
+          }
           
           // create widely spaced waypoints for later interpolation
           vector<double> ptsx;
@@ -161,19 +194,18 @@ int main() {
             ptsy.push_back(ref_y_prev);
             ptsy.push_back(ref_y);
           }
-          
+ 
           // add 30m evenly spaced points ahead of the starting reference
-          vector<double> next_wayp[3];
-          for (int i = 0; i < 2; ++i)
-          {
-            next_wayp[i] = getXY(car_s+30*(i+1), (2+4*lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
-          }
+          vector<double> next_wayp0 = getXY(car_s+30, (2+4*lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+          vector<double> next_wayp1 = getXY(car_s+60, (2+4*lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+          vector<double> next_wayp2 = getXY(car_s+90, (2+4*lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
 
-          for (int i = 0; i < 2; ++i)
-          {
-            ptsx.push_back(next_wayp[i][0]);
-            ptsy.push_back(next_wayp[i][1]);
-          }
+          ptsx.push_back(next_wayp0[0]);
+          ptsy.push_back(next_wayp0[1]);
+          ptsx.push_back(next_wayp1[0]);
+          ptsy.push_back(next_wayp1[1]);
+          ptsx.push_back(next_wayp2[0]);
+          ptsy.push_back(next_wayp2[1]);
           
           // shift car's reference point to zero degree via transformation
           for (int i = 0; i < ptsx.size(); ++i)
