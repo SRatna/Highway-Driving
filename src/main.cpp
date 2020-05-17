@@ -51,10 +51,10 @@ int main() {
     map_waypoints_dy.push_back(d_y);
   }
   int lane = 1;
-  double ref_vel = 0;
+  double ref_vel = 0.0;
 
   h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,
-               &map_waypoints_dx,&map_waypoints_dy]
+               &map_waypoints_dx,&map_waypoints_dy,&lane,&ref_vel]
               (uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
@@ -91,6 +91,40 @@ int main() {
           //   of the road.
           vector<vector<double>> sensor_fusion = j[1]["sensor_fusion"];
           int prev_size = previous_path_x.size();
+          
+          if (prev_size > 0)
+          {
+            car_s = end_path_s;
+          }
+          bool too_close = false;
+          
+          for (int i = 0; i < sensor_fusion.size(); ++i)
+          {
+            double d = sensor_fusion[i][6];
+            // if car is in same lane
+            if (d > (2+4*lane-2) && d < (2+4*lane+2)) 
+            {
+              double vx = sensor_fusion[i][3];
+              double vy = sensor_fusion[i][4];
+              double check_speed = sqrt(vx*vx+vy*vy);
+              double check_s = sensor_fusion[i][5];
+              check_s += (double)prev_size*0.02*check_speed; // projection in the future path
+              
+              if ((check_s > car_s) && ((check_s-car_s) < 30)) // 30 m is safe distance 
+              {
+                too_close = true;
+              }
+            }
+          }
+          if (too_close)
+          {
+            ref_vel -= 0.224;
+          }
+          else if (ref_vel < 49.5)
+          {
+            ref_vel += 0.224;
+          }
+          
           
           // create widely spaced waypoints for later interpolation
           vector<double> ptsx;
